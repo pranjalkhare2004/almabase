@@ -1,29 +1,33 @@
 """PostgreSQL database setup using SQLAlchemy + pgvector."""
 import os
-import logging
 from urllib.parse import urlparse
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, declarative_base
 
-logger = logging.getLogger("database")
 
-# --- Strict DATABASE_URL resolution (no localhost fallback) ---
-DATABASE_URL = os.getenv("DATABASE_URL")
+def _get_database_url() -> str:
+    """Resolve DATABASE_URL strictly — no localhost fallback."""
+    url = os.getenv("DATABASE_URL")
 
-if not DATABASE_URL:
-    raise RuntimeError(
-        "DATABASE_URL environment variable is not set. "
-        "Set it in .env (local) or Render dashboard (production)."
-    )
+    if not url:
+        raise RuntimeError(
+            "DATABASE_URL environment variable is not set. "
+            "Set it in .env (local) or Render dashboard (production)."
+        )
 
-# Render provides postgres:// but SQLAlchemy requires postgresql://
-if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+    # Render provides postgres:// but SQLAlchemy requires postgresql://
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql://", 1)
 
-# Log the DB host for verification (no credentials)
+    return url
+
+
+DATABASE_URL = _get_database_url()
+
+# Log DB host at startup (no credentials) — uses print to guarantee visibility
 _parsed = urlparse(DATABASE_URL)
-logger.info("Connecting to database host: %s:%s/%s", _parsed.hostname, _parsed.port, _parsed.path.lstrip("/"))
+print(f"[database] Connecting to DB host: {_parsed.hostname}:{_parsed.port}/{_parsed.path.lstrip('/')}")
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_size=5, max_overflow=10)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -45,9 +49,9 @@ def init_db():
         with engine.connect() as conn:
             conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
             conn.commit()
-        logger.info("pgvector extension enabled")
+        print("[database] pgvector extension enabled")
     except Exception as e:
-        logger.warning("Could not enable pgvector extension: %s", e)
+        print(f"[database] WARNING: Could not enable pgvector extension: {e}")
 
     Base.metadata.create_all(bind=engine)
-    logger.info("Database tables created")
+    print("[database] Tables created")
