@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import List
 
 from dotenv import load_dotenv
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+# override=False ensures Render's env vars take precedence over .env file
+load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
 
 logging.basicConfig(level=logging.INFO, format="%(name)s | %(levelname)s | %(message)s")
 
