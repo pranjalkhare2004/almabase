@@ -1,0 +1,32 @@
+AlmaBase Data Governance and Compliance Framework
+Version 1.4 — December 2025
+
+1. Data Retention Policy
+
+Customer records are retained for a minimum of 5 years from the date of last transaction, in accordance with applicable financial regulations. After the retention period, data is securely deleted using NIST 800-88 compliant methods including cryptographic erasure and physical destruction of storage media where applicable.
+
+Retention schedules are reviewed annually by the Data Governance Committee. Customers may request early deletion of their personal data under the right to erasure (GDPR Article 17), subject to legal retention obligations.
+
+2. Security Awareness Training
+
+All employees are required to complete security awareness training within 30 days of onboarding. Annual refresher training is mandatory for all staff. Training modules cover phishing awareness, social engineering, password hygiene, data handling procedures, and incident reporting.
+
+Completion rates are tracked in the HR management system. Employees who fail to complete training within the required timeframe may have their system access suspended. Quarterly phishing simulation exercises are conducted to measure training effectiveness.
+
+3. System Monitoring and Logging
+
+All access to sensitive systems is logged using a centralized Security Information and Event Management (SIEM) platform. Log data includes user identity, timestamp, action performed, source IP, and resource accessed.
+
+Logs are retained for a minimum of 12 months and are reviewed daily by the Security Operations Center (SOC). Anomalous activity triggers automated alerts and manual investigation. Real-time dashboards provide visibility into access patterns across all production systems.
+
+4. Disaster Recovery
+
+AlmaBase maintains a comprehensive disaster recovery plan with a Recovery Time Objective (RTO) of 4 hours and a Recovery Point Objective (RPO) of 1 hour. Backup systems are hosted in geographically separated AWS regions (us-east-1 and eu-west-1).
+
+Disaster recovery drills are conducted semi-annually. The most recent drill in October 2025 achieved full recovery in 2 hours and 45 minutes. Critical systems include automated failover with health check monitoring every 30 seconds.
+
+5. GDPR Compliance
+
+AlmaBase is fully compliant with the General Data Protection Regulation (GDPR). A Data Protection Officer (DPO) has been appointed and reports directly to the Chief Information Security Officer. Data processing agreements are in place with all sub-processors.
+
+Privacy impact assessments are conducted for all new features and systems that process personal data. Consent management is implemented for all customer-facing data collection. Data subject access requests (DSARs) are processed within 30 days as required by regulation.

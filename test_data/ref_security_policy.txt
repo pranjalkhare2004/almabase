@@ -1,0 +1,26 @@
+AlmaBase Information Security Policy
+Version 2.1 — January 2026
+
+1. Data Encryption
+
+AlmaBase encrypts all customer data at rest using AES-256 encryption. All data stored in our production databases, backup systems, and archival storage is encrypted. Data in transit is protected using TLS 1.3 for all external communications and mutual TLS for internal service-to-service communication.
+
+Encryption keys are managed through AWS Key Management Service (KMS) with automatic key rotation every 90 days. Access to encryption keys is restricted to the Security Operations team and requires multi-factor authentication.
+
+2. Authentication and Access Control
+
+All employees must authenticate using a centralized identity provider (Okta). Multi-factor authentication (MFA) is mandatory for all employees without exception. MFA methods supported include hardware security keys (YubiKey), authenticator apps (TOTP), and push notifications.
+
+Access to internal systems follows the principle of least privilege. Role-based access control (RBAC) is implemented across all production systems. Access reviews are conducted quarterly, and any unused access is revoked automatically after 30 days of inactivity.
+
+3. Security Audits
+
+AlmaBase conducts comprehensive security audits on a quarterly basis. These audits include internal vulnerability assessments, penetration testing by third-party firms, and compliance reviews against SOC 2 Type II standards.
+
+Annual external audits are performed by independent auditors certified by AICPA. Audit findings are tracked in our GRC (Governance, Risk, and Compliance) platform and remediated within 30 days for critical findings and 90 days for medium-severity findings.
+
+4. Incident Response and Data Breach Notification
+
+AlmaBase maintains a formal Incident Response Plan (IRP) that is reviewed and updated annually. In the event of a confirmed data breach involving personal data, affected individuals and relevant regulatory authorities are notified within 72 hours of discovery, in compliance with GDPR Article 33.
+
+The incident response team consists of representatives from Security, Legal, Engineering, and Communications. Post-incident reviews are conducted within 14 days of resolution to identify root causes and preventive measures.

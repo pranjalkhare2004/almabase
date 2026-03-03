@@ -1,7 +1,7 @@
 """RAG Orchestrator — single clean pipeline for answering questions.
 
 Flow:
-  1. Retrieve + filter chunks
+  1. Retrieve + filter chunks (from pgvector)
   2. Log observability data
   3. Hard fallback gate (no LLM call if retrieval fails)
   4. Build context from selected chunks
@@ -11,6 +11,8 @@ Flow:
 """
 import logging
 from typing import Tuple, List
+
+from sqlalchemy.orm import Session
 
 from app.rag.retrieval import retrieve, ABSOLUTE_MIN_THRESHOLD, DYNAMIC_MARGIN
 from app.rag.generation import generate
@@ -58,13 +60,13 @@ def _log_retrieval(
         )
 
 
-def answer_question(question: str, questionnaire_id: int) -> Tuple[str, str]:
+def answer_question(question: str, questionnaire_id: int, db: Session) -> Tuple[str, str]:
     """Full deterministic RAG pipeline for one question.
 
     Returns: (answer_text, citation_string)
     """
     # Step 1: Retrieve + filter
-    retrieved, selected, decision = retrieve(questionnaire_id, question)
+    retrieved, selected, decision = retrieve(questionnaire_id, question, db)
 
     # Step 2: Observability
     _log_retrieval(question, retrieved, selected, decision)

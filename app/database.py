@@ -1,10 +1,18 @@
-"""SQLite database setup using SQLAlchemy."""
-from sqlalchemy import create_engine
+"""PostgreSQL database setup using SQLAlchemy + pgvector."""
+import os
+import logging
+
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, declarative_base
 
-DATABASE_URL = "sqlite:///./questionnaire.db"
+logger = logging.getLogger("database")
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql://postgres:postgres@localhost:5432/ragdb",
+)
+
+engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -19,5 +27,10 @@ def get_db():
 
 
 def init_db():
-    """Create all tables."""
+    """Enable pgvector extension and create all tables."""
+    with engine.connect() as conn:
+        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        conn.commit()
+    logger.info("pgvector extension enabled")
     Base.metadata.create_all(bind=engine)
+    logger.info("Database tables created")

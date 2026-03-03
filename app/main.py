@@ -142,7 +142,7 @@ async def upload_references(
         except Exception:
             continue
 
-        build_index(questionnaire.id, text, file.filename)
+        build_index(questionnaire.id, text, file.filename, db)
 
         ref = ReferenceDocument(
             user_id=user.id, questionnaire_id=questionnaire.id, filename=file.filename
@@ -173,7 +173,7 @@ async def generate_answers(
 
     for question in questions:
         try:
-            answer, citation = answer_question(question.text, questionnaire.id)
+            answer, citation = answer_question(question.text, questionnaire.id, db)
             question.answer = answer
             question.citation = citation
         except Exception as e:

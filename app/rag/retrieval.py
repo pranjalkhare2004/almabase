@@ -1,17 +1,18 @@
-"""FAISS-based retrieval with dynamic threshold filtering.
+"""pgvector-based retrieval with dynamic threshold filtering.
 
 Responsibilities:
-  - Manage per-questionnaire FAISS indexes (in-memory)
-  - Index document chunks
-  - Retrieve + sort + filter chunks for a question
+  - Index document chunks into PostgreSQL (persistent)
+  - Retrieve + sort + filter chunks for a question via pgvector
 """
 import logging
-from typing import List, Dict, Tuple
+from typing import List, Tuple
 
-import faiss
+from sqlalchemy.orm import Session
+from sqlalchemy import text
 
-from app.rag.embedding import embed_texts, embed_query, EMBEDDING_DIM
+from app.rag.embedding import embed_texts, embed_query
 from app.rag.chunking import chunk_document
+from app.models import DocumentChunk
 
 logger = logging.getLogger("rag.retrieval")
 
@@ -19,19 +20,16 @@ logger = logging.getLogger("rag.retrieval")
 # Config
 # ---------------------------------------------------------------------------
 TOP_K = 5
-ABSOLUTE_MIN_THRESHOLD = 0.30  # Hard floor — below this, never proceed
-DYNAMIC_MARGIN = 0.10          # Keep chunks within this margin of best score
-
-# In-memory FAISS stores: {questionnaire_id: {"index": ..., "metadata": [...]}}
-_stores: Dict[int, dict] = {}
+ABSOLUTE_MIN_THRESHOLD = 0.30
+DYNAMIC_MARGIN = 0.10
 
 
 # ---------------------------------------------------------------------------
-# Indexing
+# Indexing (persistent via PostgreSQL)
 # ---------------------------------------------------------------------------
 
-def build_index(questionnaire_id: int, doc_text: str, doc_name: str):
-    """Chunk a document and add to the FAISS index for a questionnaire."""
+def build_index(questionnaire_id: int, doc_text: str, doc_name: str, db: Session):
+    """Chunk a document, embed, and store in PostgreSQL with pgvector."""
     chunks = chunk_document(doc_text, doc_name)
     if not chunks:
         return
@@ -39,62 +37,70 @@ def build_index(questionnaire_id: int, doc_text: str, doc_name: str):
     texts = [c["text"] for c in chunks]
     embeddings = embed_texts(texts)
 
-    if questionnaire_id not in _stores:
-        index = faiss.IndexFlatIP(EMBEDDING_DIM)
-        _stores[questionnaire_id] = {"index": index, "metadata": []}
-
-    store = _stores[questionnaire_id]
-    base = len(store["metadata"])
-    store["index"].add(embeddings)
-
     for i, chunk in enumerate(chunks):
-        store["metadata"].append({
-            "doc_name": chunk["doc_name"],
-            "chunk_id": base + i,
-            "text": chunk["text"],
-        })
+        row = DocumentChunk(
+            questionnaire_id=questionnaire_id,
+            doc_name=chunk["doc_name"],
+            chunk_id=i,
+            chunk_text=chunk["text"],
+            embedding=embeddings[i].tolist(),
+        )
+        db.add(row)
+
+    db.commit()
 
     logger.info(
-        "INDEXED | doc='%s' | chunks=%d | total=%d | qid=%d",
-        doc_name, len(chunks), store["index"].ntotal, questionnaire_id,
+        "INDEXED | doc='%s' | chunks=%d | qid=%d",
+        doc_name, len(chunks), questionnaire_id,
     )
 
 
 # ---------------------------------------------------------------------------
-# Retrieval + Filtering
+# Retrieval + Filtering (pgvector cosine similarity)
 # ---------------------------------------------------------------------------
 
 def retrieve(
-    questionnaire_id: int, question: str
+    questionnaire_id: int, question: str, db: Session
 ) -> Tuple[List[Tuple[float, dict]], List[Tuple[float, dict]], str]:
-    """Retrieve, sort, and filter chunks for a question.
+    """Retrieve, sort, and filter chunks using pgvector cosine similarity.
 
     Returns:
-        all_retrieved: all top_k chunks sorted by score desc
+        all_retrieved: top_k chunks sorted by score desc
         selected: filtered + capped chunks ready for generation
         decision: "proceed" or "fallback"
     """
-    if questionnaire_id not in _stores:
+    query_vec = embed_query(question)
+    vec_str = "[" + ",".join(str(float(v)) for v in query_vec[0]) + "]"
+
+    result = db.execute(
+        text("""
+            SELECT
+                id, questionnaire_id, doc_name, chunk_id, chunk_text,
+                1 - (embedding <=> :qvec) AS similarity
+            FROM document_chunks
+            WHERE questionnaire_id = :qid
+            ORDER BY embedding <=> :qvec
+            LIMIT :topk
+        """),
+        {"qvec": vec_str, "qid": questionnaire_id, "topk": TOP_K},
+    )
+    rows = result.fetchall()
+
+    if not rows:
         return [], [], "fallback"
 
-    store = _stores[questionnaire_id]
-    if store["index"].ntotal == 0:
-        return [], [], "fallback"
-
-    # Retrieve
-    q_emb = embed_query(question)
-    k = min(TOP_K, store["index"].ntotal)
-    scores, indices = store["index"].search(q_emb, k)
-
-    # Sort descending
+    # Build sorted list
     retrieved: List[Tuple[float, dict]] = []
-    for score, idx in zip(scores[0], indices[0]):
-        if 0 <= idx < len(store["metadata"]):
-            retrieved.append((float(score), store["metadata"][idx]))
+    for row in rows:
+        retrieved.append((
+            float(row.similarity),
+            {
+                "doc_name": row.doc_name,
+                "chunk_id": row.chunk_id,
+                "text": row.chunk_text,
+            },
+        ))
     retrieved.sort(key=lambda x: x[0], reverse=True)
-
-    if not retrieved:
-        return [], [], "fallback"
 
     # Hard fallback gate
     best = retrieved[0][0]

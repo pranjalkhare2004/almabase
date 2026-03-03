@@ -1,0 +1,12 @@
+1. Does your organization encrypt customer data at rest?
+2. What authentication mechanisms are used for employee access?
+3. How often are security audits conducted?
+4. Does your organization have a data breach notification policy?
+5. What is your data retention policy for customer records?
+6. Are employees required to complete security awareness training?
+7. Does your organization use multi-factor authentication (MFA)?
+8. How is access to sensitive systems logged and monitored?
+9. What disaster recovery procedures are in place?
+10. Does your organization comply with GDPR requirements?
+11. What is your policy on third-party vendor risk assessment?
+12. How are cryptographic keys managed and rotated?
