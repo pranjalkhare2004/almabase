@@ -1,10 +1,11 @@
 """Main FastAPI application — Structured Questionnaire Answering Tool."""
 import os
 import tempfile
+from pathlib import Path
 from typing import List
 
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 from fastapi import FastAPI, Depends, Request, UploadFile, File, Form, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
