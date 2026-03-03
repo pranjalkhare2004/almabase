@@ -17,8 +17,9 @@ from docx import Document as DocxDocument
 from app.database import get_db, init_db
 from app.models import User, Questionnaire, Question, ReferenceDocument
 from app.auth import router as auth_router, get_current_user, require_auth, RedirectException
-from app.utils import extract_text_from_file, split_questions, chunk_text
-from app.rag import build_faiss_index, generate_answer
+from app.utils import extract_text_from_file, split_questions
+from app.rag.retrieval import build_index
+from app.rag.orchestrator import answer_question
 
 app = FastAPI(title="Questionnaire Answering Tool")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -141,9 +142,7 @@ async def upload_references(
         except Exception:
             continue
 
-        chunks = chunk_text(text)
-        if chunks:
-            build_faiss_index(questionnaire.id, chunks, file.filename)
+        build_index(questionnaire.id, text, file.filename)
 
         ref = ReferenceDocument(
             user_id=user.id, questionnaire_id=questionnaire.id, filename=file.filename
@@ -174,7 +173,7 @@ async def generate_answers(
 
     for question in questions:
         try:
-            answer, citation = generate_answer(question.text, questionnaire.id)
+            answer, citation = answer_question(question.text, questionnaire.id)
             question.answer = answer
             question.citation = citation
         except Exception as e:
