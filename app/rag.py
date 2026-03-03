@@ -1,14 +1,14 @@
-"""RAG module: deterministic retrieval, system-controlled citations, hard fallback.
+"""RAG module: deterministic retrieval with dynamic threshold, system-controlled citations.
 
 Architecture (per question):
   1. Embed question (local sentence-transformers)
   2. Retrieve top_k=5 chunks from FAISS
   3. Sort by similarity descending
-  4. Hard fallback gate: if best score < threshold → return fallback, NO LLM, NO citations
-  5. Filter: keep only chunks with score >= threshold
-  6. Select top 3 filtered chunks
-  7. LLM generates answer text ONLY (no citations in prompt, LLM unaware of chunk IDs)
-  8. If LLM returns fallback text → return fallback, NO citations
+  4. Hard fallback gate: if best score < ABSOLUTE_MIN_THRESHOLD → no LLM, no citations
+  5. Dynamic filtering: keep chunks within MARGIN of best score (relative selection)
+  6. Select top MAX_CONTEXT_CHUNKS from filtered set
+  7. LLM generates answer text ONLY (unaware of chunk IDs / doc names)
+  8. If LLM says "not found" → return fallback, no citations
   9. System attaches citations deterministically from selected chunk metadata
 """
 import os
@@ -22,18 +22,22 @@ from groq import Groq
 from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger("rag")
-logging.basicConfig(level=logging.INFO, format="%(name)s | %(levelname)s | %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(name)s | %(levelname)s | %(message)s",
+)
 
 # ---------------------------------------------------------------------------
-# Config
+# Config — tuned for balanced precision + recall
 # ---------------------------------------------------------------------------
 CHAT_MODEL = "llama-3.3-70b-versatile"
 EMBED_MODEL_NAME = "all-MiniLM-L6-v2"
 EMBEDDING_DIM = 384
 
-SIMILARITY_THRESHOLD = 0.45   # Hard gate — nothing below this touches LLM or citations
-TOP_K_RETRIEVE = 5            # Retrieve 5, filter+select from there
-MAX_CONTEXT_CHUNKS = 3        # Max chunks sent to LLM (prevents context blending)
+ABSOLUTE_MIN_THRESHOLD = 0.30  # Hard floor — below this, never call LLM
+DYNAMIC_MARGIN = 0.10          # Keep chunks within this margin of the best score
+TOP_K_RETRIEVE = 5
+MAX_CONTEXT_CHUNKS = 3
 
 FALLBACK_ANSWER = "Not found in references."
 
@@ -81,7 +85,7 @@ def build_faiss_index(questionnaire_id: int, chunks: List[str], doc_name: str):
     embeddings = get_embeddings(chunks)
 
     if questionnaire_id not in faiss_stores:
-        index = faiss.IndexFlatIP(EMBEDDING_DIM)  # Inner product on normalized = cosine
+        index = faiss.IndexFlatIP(EMBEDDING_DIM)  # cosine sim on normalized vectors
         faiss_stores[questionnaire_id] = {"index": index, "metadata": []}
 
     store = faiss_stores[questionnaire_id]
@@ -96,65 +100,85 @@ def build_faiss_index(questionnaire_id: int, chunks: List[str], doc_name: str):
         })
 
     logger.info(
-        "INDEXED | doc='%s' | chunks=%d | total_vectors=%d | qid=%d",
+        "INDEXED | doc='%s' | new_chunks=%d | total_vectors=%d | qid=%d",
         doc_name, len(chunks), store["index"].ntotal, questionnaire_id,
     )
 
 
 # ---------------------------------------------------------------------------
-# Step 1-3: Retrieve + Sort + Filter
+# Retrieval: retrieve → sort → hard gate → dynamic filter → select
 # ---------------------------------------------------------------------------
 
-def _retrieve_and_filter(
+def _retrieve_sort_filter(
     questionnaire_id: int, question: str
-) -> Tuple[List[Tuple[float, dict]], List[Tuple[float, dict]]]:
-    """Retrieve top_k chunks, return (all_retrieved, filtered_by_threshold).
+) -> Tuple[
+    List[Tuple[float, dict]],   # all_retrieved (sorted desc)
+    List[Tuple[float, dict]],   # dynamically_filtered
+    str,                        # decision: "fallback" | "proceed"
+]:
+    """Core retrieval logic with dynamic margin-based filtering.
 
-    Both lists are sorted by similarity descending.
+    Returns (all_retrieved, filtered, decision).
     """
     if questionnaire_id not in faiss_stores:
-        return [], []
+        return [], [], "fallback"
 
     store = faiss_stores[questionnaire_id]
     if store["index"].ntotal == 0:
-        return [], []
+        return [], [], "fallback"
 
+    # Step 1-2: Retrieve + sort
     query_emb = get_embeddings([question])
     k = min(TOP_K_RETRIEVE, store["index"].ntotal)
     scores, indices = store["index"].search(query_emb, k)
 
-    # Build sorted list (already sorted by FAISS, but be explicit)
     retrieved: List[Tuple[float, dict]] = []
     for score, idx in zip(scores[0], indices[0]):
         if 0 <= idx < len(store["metadata"]):
             retrieved.append((float(score), store["metadata"][idx]))
     retrieved.sort(key=lambda x: x[0], reverse=True)
 
-    # Filter by threshold
-    filtered = [(s, m) for s, m in retrieved if s >= SIMILARITY_THRESHOLD]
+    if not retrieved:
+        return [], [], "fallback"
 
-    return retrieved, filtered
+    # Step 3: Hard fallback gate
+    best_score = retrieved[0][0]
+    if best_score < ABSOLUTE_MIN_THRESHOLD:
+        return retrieved, [], "fallback"
+
+    # Step 4: Dynamic margin-based filtering
+    # Keep chunks within DYNAMIC_MARGIN of best_score
+    cutoff = best_score - DYNAMIC_MARGIN
+    filtered = [(s, m) for s, m in retrieved if s >= cutoff]
+
+    if not filtered:
+        return retrieved, [], "fallback"
+
+    return retrieved, filtered, "proceed"
 
 
 # ---------------------------------------------------------------------------
-# Step 7-8: LLM Generation (answer text only)
+# LLM Generation (answer text ONLY — no citations)
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = (
     "You are a precise answering assistant. "
     "Answer ONLY using the provided context. "
-    "Do NOT add citations, references, document names, or chunk IDs. "
+    "Provide concise but complete information. "
+    "Do NOT invent information beyond what the context states. "
+    "Do NOT include citations, references, document names, or source identifiers. "
     "If the context does not contain the answer, respond exactly: "
     "'Not found in references.'"
 )
 
 
 def _generate_answer_text(context: str, question: str) -> Tuple[str, float]:
-    """Call LLM to generate answer text only. Returns (answer, elapsed_seconds)."""
+    """Call LLM to produce answer text only. Returns (answer, elapsed_seconds)."""
     prompt = f"""Answer the following question using ONLY the provided context.
+Provide a concise but complete answer.
+Do not invent information beyond what is stated in the context.
 If the answer is not in the context, respond exactly: 'Not found in references.'
-
-Do NOT include citations, source names, or document references.
+Do NOT include citations or source references.
 
 Context:
 {context}
@@ -165,7 +189,7 @@ Answer:"""
 
     client = get_groq_client()
     start = time.time()
-    response = client.chat.completions.create(
+    resp = client.chat.completions.create(
         model=CHAT_MODEL,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -176,15 +200,17 @@ Answer:"""
         max_tokens=500,
     )
     elapsed = time.time() - start
-    return response.choices[0].message.content.strip(), elapsed
+    return resp.choices[0].message.content.strip(), elapsed
 
 
 # ---------------------------------------------------------------------------
-# Step 9: Deterministic Citation Attachment
+# Deterministic Citation Builder
 # ---------------------------------------------------------------------------
 
 def _build_citations(selected: List[Tuple[float, dict]]) -> str:
-    """Build citation string from chunk metadata. System-controlled, never LLM."""
+    """Build citation string from selected chunk metadata.
+    Purely system-controlled — LLM never touches this.
+    """
     seen: List[str] = []
     for _, meta in selected:
         c = f"[{meta['doc_name']} - Chunk {meta['chunk_idx']}]"
@@ -202,54 +228,63 @@ def generate_answer(question: str, questionnaire_id: int) -> Tuple[str, str]:
 
     Returns: (answer_text, citation_string)
     """
-    q_preview = question[:100]
+    q_short = question[:100]
 
-    # --- Retrieve + Filter ---
-    retrieved, filtered = _retrieve_and_filter(questionnaire_id, question)
+    # ===================== RETRIEVAL =====================
+    retrieved, filtered, decision = _retrieve_sort_filter(questionnaire_id, question)
 
-    # --- Observability: log all retrieved scores ---
-    logger.info("=" * 70)
-    logger.info("QUESTION: %s", q_preview)
+    # ===================== OBSERVABILITY =====================
+    logger.info("=" * 72)
+    logger.info("QUESTION: %s", q_short)
+
     if not retrieved:
-        logger.info("  NO VECTORS in index → fallback")
+        logger.info("  ⚠ NO VECTORS in index → FALLBACK")
         return FALLBACK_ANSWER, ""
 
-    for i, (score, meta) in enumerate(retrieved):
-        marker = "✓" if score >= SIMILARITY_THRESHOLD else "✗"
-        logger.info(
-            "  [%s] rank=%d  score=%.4f  doc='%s'  chunk=%d  preview='%s'",
-            marker, i, score, meta["doc_name"], meta["chunk_idx"],
-            meta["text"][:60].replace("\n", " "),
-        )
-
-    # --- Hard Fallback Gate (Phase 3) ---
     best_score = retrieved[0][0]
-    if not filtered:
+    cutoff = best_score - DYNAMIC_MARGIN
+
+    for rank, (score, meta) in enumerate(retrieved):
+        passed = "✓" if score >= cutoff and best_score >= ABSOLUTE_MIN_THRESHOLD else "✗"
         logger.info(
-            "  FALLBACK TRIGGERED | best_score=%.4f < threshold=%.4f | NO LLM call",
-            best_score, SIMILARITY_THRESHOLD,
+            "  [%s] rank=%d  sim=%.4f  doc='%s'  chunk=%d  text='%s'",
+            passed, rank, score, meta["doc_name"], meta["chunk_idx"],
+            meta["text"][:70].replace("\n", " "),
+        )
+
+    logger.info(
+        "  SCORES: best=%.4f  cutoff=%.4f (best - %.2f)  abs_min=%.4f",
+        best_score, cutoff, DYNAMIC_MARGIN, ABSOLUTE_MIN_THRESHOLD,
+    )
+
+    # ===================== HARD FALLBACK GATE =====================
+    if decision == "fallback":
+        logger.info(
+            "  ✗ FALLBACK | best=%.4f < abs_min=%.4f | NO LLM call | NO citations",
+            best_score, ABSOLUTE_MIN_THRESHOLD,
         )
         return FALLBACK_ANSWER, ""
 
-    # --- Select top N filtered chunks (Phase 4) ---
+    # ===================== SELECT TOP CHUNKS =====================
     selected = filtered[:MAX_CONTEXT_CHUNKS]
     logger.info(
-        "  SELECTED %d chunks | scores=%s",
+        "  ✓ SELECTED %d chunks | scores=%s",
         len(selected), [f"{s:.4f}" for s, _ in selected],
     )
 
-    # --- Build context + Generate (Phase 2, 6) ---
+    # ===================== GENERATION =====================
     context = "\n\n---\n\n".join(meta["text"] for _, meta in selected)
     answer, elapsed = _generate_answer_text(context, question)
-    logger.info("  LLM responded in %.2fs | answer_len=%d", elapsed, len(answer))
+    logger.info("  LLM: %.2fs | len=%d", elapsed, len(answer))
 
-    # --- If LLM says not found → respect it, no citations (Phase 3 secondary) ---
+    # ===================== LLM FALLBACK RESPECT =====================
     if "not found in references" in answer.lower():
-        logger.info("  LLM returned fallback → NO citations attached")
+        logger.info("  LLM returned fallback → NO citations")
         return FALLBACK_ANSWER, ""
 
-    # --- Attach citations deterministically (Phase 5) ---
+    # ===================== DETERMINISTIC CITATIONS =====================
     citations = _build_citations(selected)
     logger.info("  CITATIONS: %s", citations)
+    logger.info("=" * 72)
 
     return answer, citations

@@ -24,30 +24,43 @@ def extract_text_from_file(file_content: bytes, filename: str) -> str:
 
 def split_questions(text: str) -> List[str]:
     """Split text into individual questions by numbering or newlines."""
-    # Try numbered pattern first: 1. or 1) or Q1. or Q1) etc.
     pattern = r'(?:^|\n)\s*(?:Q?\d+[\.\)]\s*)'
     parts = re.split(pattern, text)
     questions = [q.strip() for q in parts if q.strip()]
     if len(questions) > 1:
         return questions
-    # Fallback: split by blank lines or newlines
     questions = [q.strip() for q in text.split("\n") if q.strip()]
     return questions
 
 
-# --- Semantic-boundary chunking (Phase 1) ---
-
-def _split_into_sentences(text: str) -> List[str]:
-    """Split text into sentences using regex boundaries."""
-    # Split on sentence-ending punctuation followed by space or newline
-    raw = re.split(r'(?<=[.!?])\s+', text)
-    sentences = [s.strip() for s in raw if s.strip()]
-    return sentences
-
+# ---------------------------------------------------------------------------
+# Paragraph-aware semantic chunking
+# ---------------------------------------------------------------------------
 
 def _estimate_tokens(text: str) -> int:
-    """Rough token estimate: ~0.75 words per token (conservative)."""
+    """Conservative token estimate (~1.3 tokens per word)."""
     return max(1, int(len(text.split()) * 1.3))
+
+
+def _split_into_paragraphs(text: str) -> List[str]:
+    """Split text into paragraphs (double newline or indented blocks).
+    Falls back to sentence splitting for long paragraphs.
+    """
+    # Split on double newlines first (standard paragraph separator)
+    raw_paragraphs = re.split(r'\n\s*\n', text)
+    paragraphs = [p.strip() for p in raw_paragraphs if p.strip()]
+
+    # If no paragraph breaks found, try single newlines
+    if len(paragraphs) <= 1 and text.strip():
+        paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
+
+    return paragraphs
+
+
+def _split_paragraph_into_sentences(paragraph: str) -> List[str]:
+    """Split a paragraph into sentences."""
+    raw = re.split(r'(?<=[.!?])\s+', paragraph)
+    return [s.strip() for s in raw if s.strip()]
 
 
 def chunk_text(
@@ -56,60 +69,70 @@ def chunk_text(
     max_chunk_tokens: int = 700,
     overlap_tokens: int = 75,
 ) -> List[str]:
-    """Split text into chunks respecting sentence boundaries.
+    """Chunk text respecting paragraph and sentence boundaries.
 
     Strategy:
-      1. Split text into sentences
-      2. Accumulate sentences into a chunk until max_chunk_tokens
-      3. When a chunk reaches min_chunk_tokens and the next sentence
-         would exceed max_chunk_tokens, finalize the chunk
-      4. Start next chunk with overlap_tokens worth of trailing sentences
-
-    This avoids splitting mid-sentence and keeps chunks 400-700 tokens.
+      1. Split into paragraphs
+      2. Accumulate paragraphs into chunks (400-700 tokens)
+      3. If a single paragraph exceeds max, sub-split by sentences
+      4. Add overlap from trailing content of previous chunk
+      5. Each chunk is self-contained (no mid-sentence breaks)
     """
-    sentences = _split_into_sentences(text)
-    if not sentences:
+    paragraphs = _split_into_paragraphs(text)
+    if not paragraphs:
         return []
 
+    # Expand large paragraphs into sentence groups
+    units: List[str] = []
+    for para in paragraphs:
+        para_tokens = _estimate_tokens(para)
+        if para_tokens <= max_chunk_tokens:
+            units.append(para)
+        else:
+            # Break large paragraph into sentences
+            sentences = _split_paragraph_into_sentences(para)
+            for sent in sentences:
+                units.append(sent)
+
     chunks: List[str] = []
-    current_sentences: List[str] = []
+    current_units: List[str] = []
     current_tokens = 0
 
-    for sentence in sentences:
-        sent_tokens = _estimate_tokens(sentence)
+    for unit in units:
+        unit_tokens = _estimate_tokens(unit)
 
-        # If adding this sentence exceeds max and we already have enough
-        if current_tokens + sent_tokens > max_chunk_tokens and current_tokens >= min_chunk_tokens:
-            # Finalize current chunk
-            chunk_text_str = " ".join(current_sentences)
-            chunks.append(chunk_text_str)
+        # If adding this unit exceeds max and we already have enough content
+        if current_tokens + unit_tokens > max_chunk_tokens and current_tokens >= min_chunk_tokens:
+            chunk_str = "\n\n".join(current_units)
+            chunks.append(chunk_str)
 
-            # Build overlap: take trailing sentences up to overlap_tokens
-            overlap_sents: List[str] = []
+            # Build overlap from trailing units
+            overlap_units: List[str] = []
             overlap_count = 0
-            for s in reversed(current_sentences):
-                s_tok = _estimate_tokens(s)
-                if overlap_count + s_tok > overlap_tokens:
+            for u in reversed(current_units):
+                u_tok = _estimate_tokens(u)
+                if overlap_count + u_tok > overlap_tokens:
                     break
-                overlap_sents.insert(0, s)
-                overlap_count += s_tok
+                overlap_units.insert(0, u)
+                overlap_count += u_tok
 
-            current_sentences = overlap_sents
+            current_units = overlap_units
             current_tokens = overlap_count
 
-        current_sentences.append(sentence)
-        current_tokens += sent_tokens
+        current_units.append(unit)
+        current_tokens += unit_tokens
 
     # Final chunk
-    if current_sentences:
-        chunk_text_str = " ".join(current_sentences)
-        if chunk_text_str.strip():
-            chunks.append(chunk_text_str)
+    if current_units:
+        chunk_str = "\n\n".join(current_units)
+        if chunk_str.strip():
+            chunks.append(chunk_str)
 
     # Log chunk stats
     for i, chunk in enumerate(chunks):
         tok = _estimate_tokens(chunk)
-        preview = chunk[:80].replace("\n", " ")
-        logger.info("  Chunk %d: ~%d tokens, preview='%s...'", i, tok, preview)
+        preview = chunk[:90].replace("\n", " ")
+        logger.info("  chunk[%d]: ~%d tokens | '%s...'", i, tok, preview)
+    logger.info("  Total chunks: %d", len(chunks))
 
     return chunks
