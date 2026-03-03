@@ -1,5 +1,6 @@
 """Main FastAPI application — Structured Questionnaire Answering Tool."""
 import os
+import logging
 import tempfile
 from pathlib import Path
 from typing import List
@@ -7,8 +8,10 @@ from typing import List
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
+logging.basicConfig(level=logging.INFO, format="%(name)s | %(levelname)s | %(message)s")
+
 from fastapi import FastAPI, Depends, Request, UploadFile, File, Form, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
@@ -21,9 +24,12 @@ from app.utils import extract_text_from_file, split_questions
 from app.rag.retrieval import build_index
 from app.rag.orchestrator import answer_question
 
+# Resolve paths relative to this file (works in Docker and locally)
+BASE_DIR = Path(__file__).resolve().parent
+
 app = FastAPI(title="Questionnaire Answering Tool")
-app.mount("/static", StaticFiles(directory="app/static"), name="static")
-templates = Jinja2Templates(directory="app/templates")
+app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 app.include_router(auth_router)
 
 
@@ -35,6 +41,13 @@ async def redirect_exception_handler(request: Request, exc: RedirectException):
 @app.on_event("startup")
 def startup():
     init_db()
+
+
+# --- Health Check ---
+
+@app.get("/health")
+async def health_check():
+    return JSONResponse({"status": "ok"})
 
 
 # --- Homepage ---

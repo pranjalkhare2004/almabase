@@ -1,0 +1,17 @@
+__pycache__
+*.pyc
+*.pyo
+.env
+.git
+.gitignore
+*.db
+*.sqlite3
+venv/
+.venv/
+node_modules/
+test_data/
+rag_eval.py
+eval_output.*
+*.md
+!README.md
+.gemini/
