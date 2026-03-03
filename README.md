@@ -13,7 +13,7 @@ This tool allows users to:
 1. **Register/Login** with JWT-based authentication
 2. **Upload a questionnaire** (PDF/TXT) — parsed into individual questions
 3. **Upload reference documents** (PDF/TXT) — chunked and embedded into a FAISS vector store
-4. **Generate answers** using RAG — each question retrieves relevant chunks, and GPT generates grounded answers with citations
+4. **Generate answers** using RAG — each question retrieves relevant chunks, and Llama 3.3 (via Groq) generates grounded answers with citations
 5. **Review & edit** answers before finalizing
 6. **Export** the completed questionnaire as a formatted DOCX file
 
@@ -21,7 +21,8 @@ This tool allows users to:
 
 ```
 User → FastAPI (Jinja2 Templates) → SQLite (data) + FAISS (vectors)
-                                   → OpenAI API (embeddings + chat)
+                                   → Groq API (Llama 3.3 chat)
+                                   → sentence-transformers (local embeddings)
                                    → python-docx (export)
 ```
 
@@ -30,8 +31,8 @@ User → FastAPI (Jinja2 Templates) → SQLite (data) + FAISS (vectors)
 - Questions are separated by newlines or standard numbering (1. / 1) / Q1.)
 - Reference documents contain the answers — the LLM only uses provided context
 - FAISS index is in-memory (resets on server restart; suitable for demo/assignment use)
-- OpenAI `text-embedding-3-small` for embeddings, `gpt-4o-mini` for generation
-- Similarity threshold of 0.35 — below this, returns "Not found in references."
+- `all-MiniLM-L6-v2` (sentence-transformers) for local embeddings, Groq `llama-3.3-70b-versatile` for generation
+- Similarity threshold of 0.40 — below this, returns "Not found in references."
 
 ## Trade-offs
 
@@ -41,13 +42,14 @@ User → FastAPI (Jinja2 Templates) → SQLite (data) + FAISS (vectors)
 | SQLite | Zero config, file-based, perfect for single-instance deploy |
 | Cookie-based JWT | Simpler than header-based auth for server-rendered templates |
 | Minimal chunking (word-based) | Good enough for most documents; avoids tiktoken dependency |
+| Local embeddings | No API cost for embeddings; sentence-transformers runs on CPU |
 | No background workers | Answers generate synchronously; acceptable for small questionnaires |
 
 ## How to Run Locally
 
 ### Prerequisites
 - Python 3.10+
-- OpenAI API key
+- Groq API key (free at https://console.groq.com)
 
 ### Setup
 
@@ -65,7 +67,7 @@ pip install -r requirements.txt
 
 # Configure environment
 cp .env.example .env
-# Edit .env and add your OPENAI_API_KEY
+# Edit .env and add your GROQ_API_KEY
 
 # Run the application
 uvicorn app.main:app --reload --port 8000
@@ -81,7 +83,7 @@ Visit `http://localhost:8000` in your browser.
 2. Connect your GitHub repository
 3. Set build command: `pip install -r requirements.txt`
 4. Set start command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
-5. Add environment variables: `OPENAI_API_KEY`, `SECRET_KEY`
+5. Add environment variables: `GROQ_API_KEY`, `SECRET_KEY`
 
 **Live URL**: _[To be added after deployment]_
 

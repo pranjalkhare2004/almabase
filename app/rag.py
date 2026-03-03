@@ -1,38 +1,47 @@
-"""RAG module: embeddings, FAISS indexing, retrieval, answer generation."""
+"""RAG module: embeddings, FAISS indexing, retrieval, answer generation via Groq."""
 import os
 from typing import List, Dict, Tuple, Optional
 import numpy as np
 
 import faiss
-from openai import OpenAI
+from groq import Groq
+from sentence_transformers import SentenceTransformer
 
-client: Optional[OpenAI] = None
+groq_client: Optional[Groq] = None
+embed_model: Optional[SentenceTransformer] = None
+
 # In-memory FAISS store per questionnaire
-# Structure: {questionnaire_id: {"index": faiss.Index, "metadata": [{"doc_name": str, "chunk_idx": int, "text": str}]}}
+# Structure: {questionnaire_id: {"index": faiss.Index, "metadata": [...]}}
 faiss_stores: Dict[int, dict] = {}
 
-EMBEDDING_MODEL = "text-embedding-3-small"
-CHAT_MODEL = "gpt-4o-mini"
-SIMILARITY_THRESHOLD = 0.35
-EMBEDDING_DIM = 1536
+CHAT_MODEL = "llama-3.3-70b-versatile"
+EMBED_MODEL_NAME = "all-MiniLM-L6-v2"
+EMBEDDING_DIM = 384  # Dimension for all-MiniLM-L6-v2
+SIMILARITY_THRESHOLD = 0.40
 
 
-def get_client() -> OpenAI:
-    global client
-    if client is None:
-        api_key = os.getenv("OPENAI_API_KEY")
+def get_groq_client() -> Groq:
+    global groq_client
+    if groq_client is None:
+        api_key = os.getenv("GROQ_API_KEY")
         if not api_key:
-            raise RuntimeError("OPENAI_API_KEY environment variable is not set.")
-        client = OpenAI(api_key=api_key)
-    return client
+            raise RuntimeError("GROQ_API_KEY environment variable is not set.")
+        groq_client = Groq(api_key=api_key)
+    return groq_client
+
+
+def get_embed_model() -> SentenceTransformer:
+    global embed_model
+    if embed_model is None:
+        embed_model = SentenceTransformer(EMBED_MODEL_NAME)
+    return embed_model
 
 
 def get_embeddings(texts: List[str]) -> np.ndarray:
-    """Get embeddings for a list of texts using OpenAI API."""
-    c = get_client()
-    response = c.embeddings.create(input=texts, model=EMBEDDING_MODEL)
-    embeddings = [item.embedding for item in response.data]
-    return np.array(embeddings, dtype="float32")
+    """Get embeddings using local sentence-transformers model."""
+    model = get_embed_model()
+    embeddings = model.encode(texts, convert_to_numpy=True, normalize_embeddings=True)
+    return embeddings.astype("float32")
 
 
 def build_faiss_index(questionnaire_id: int, chunks: List[str], doc_name: str):
@@ -41,8 +50,6 @@ def build_faiss_index(questionnaire_id: int, chunks: List[str], doc_name: str):
         return
 
     embeddings = get_embeddings(chunks)
-    # Normalize for cosine similarity
-    faiss.normalize_L2(embeddings)
 
     if questionnaire_id not in faiss_stores:
         index = faiss.IndexFlatIP(EMBEDDING_DIM)
@@ -68,7 +75,6 @@ def retrieve_chunks(questionnaire_id: int, query: str, top_k: int = 3) -> List[T
         return []
 
     query_embedding = get_embeddings([query])
-    faiss.normalize_L2(query_embedding)
     scores, indices = store["index"].search(query_embedding, min(top_k, store["index"].ntotal))
 
     results = []
@@ -79,7 +85,7 @@ def retrieve_chunks(questionnaire_id: int, query: str, top_k: int = 3) -> List[T
 
 
 def generate_answer(question: str, questionnaire_id: int) -> Tuple[str, str]:
-    """Generate an answer for a question using RAG.
+    """Generate an answer for a question using RAG with Groq.
 
     Returns: (answer, citation)
     """
@@ -116,8 +122,8 @@ Question: {question}
 
 Answer (include relevant details from the context):"""
 
-    c = get_client()
-    response = c.chat.completions.create(
+    client = get_groq_client()
+    response = client.chat.completions.create(
         model=CHAT_MODEL,
         messages=[
             {"role": "system", "content": "You are a precise answering assistant. Answer ONLY from the given context. If the answer is not in the context, say exactly: 'Not found in references.'"},
