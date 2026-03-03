@@ -89,14 +89,23 @@ Visit `http://localhost:8000` in your browser.
 
 ## Deployment
 
-### Render
+### Render (Recommended)
 
-1. Create a new **Web Service** on [Render](https://render.com)
-2. Connect your GitHub repository
-3. Add a PostgreSQL database (with pgvector extension)
-4. Set build command: `pip install -r requirements.txt`
-5. Set start command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
-6. Add environment variables: `GROQ_API_KEY`, `SECRET_KEY`, `DATABASE_URL`
+**Option A — Blueprint (one click):**
+1. Fork this repo to your GitHub
+2. Go to [Render Dashboard](https://dashboard.render.com) → **New** → **Blueprint**
+3. Connect your repo — Render reads `render.yaml` automatically
+4. Set `GROQ_API_KEY` in the dashboard
+5. Deploy — Render creates the PostgreSQL database + web service automatically
+
+**Option B — Manual setup:**
+1. Create a **PostgreSQL** database on Render (enable pgvector extension)
+2. Create a **Web Service** → Docker runtime → connect your repo
+3. Set environment variables:
+   - `DATABASE_URL` — from your Render PostgreSQL dashboard
+   - `GROQ_API_KEY` — your Groq API key
+   - `SECRET_KEY` — any random string
+4. Deploy
 
 **Live URL**: _[To be added after deployment]_
 

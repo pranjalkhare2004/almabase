@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: rag-app
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ragdb
+          property: connectionString
+      - key: GROQ_API_KEY
+        sync: false
+      - key: SECRET_KEY
+        generateValue: true
+    healthCheckPath: /health
+
+databases:
+  - name: ragdb
+    databaseName: ragdb
+    user: raguser
+    plan: free
+    ipAllowList: []
+    postgresMajorVersion: "16"
