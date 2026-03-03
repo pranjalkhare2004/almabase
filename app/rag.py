@@ -1,13 +1,15 @@
-"""RAG module: local embeddings, FAISS indexing, retrieval, answer generation via Groq.
+"""RAG module: deterministic retrieval, system-controlled citations, hard fallback.
 
-Pipeline (per question):
+Architecture (per question):
   1. Embed question (local sentence-transformers)
   2. Retrieve top_k=5 chunks from FAISS
-  3. Filter chunks by similarity >= threshold
-  4. If no chunk passes → return fallback, NO citations
-  5. Select top 3 filtered chunks
-  6. Generate answer using ONLY selected chunks (LLM produces answer text only)
-  7. System attaches citations programmatically from chunk metadata
+  3. Sort by similarity descending
+  4. Hard fallback gate: if best score < threshold → return fallback, NO LLM, NO citations
+  5. Filter: keep only chunks with score >= threshold
+  6. Select top 3 filtered chunks
+  7. LLM generates answer text ONLY (no citations in prompt, LLM unaware of chunk IDs)
+  8. If LLM returns fallback text → return fallback, NO citations
+  9. System attaches citations deterministically from selected chunk metadata
 """
 import os
 import time
@@ -20,21 +22,27 @@ from groq import Groq
 from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger("rag")
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format="%(name)s | %(levelname)s | %(message)s")
 
-groq_client: Optional[Groq] = None
-embed_model: Optional[SentenceTransformer] = None
-
-# In-memory FAISS store per questionnaire
-faiss_stores: Dict[int, dict] = {}
-
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
 CHAT_MODEL = "llama-3.3-70b-versatile"
 EMBED_MODEL_NAME = "all-MiniLM-L6-v2"
 EMBEDDING_DIM = 384
-SIMILARITY_THRESHOLD = 0.35
-TOP_K_RETRIEVE = 5
-MAX_CONTEXT_CHUNKS = 3
+
+SIMILARITY_THRESHOLD = 0.45   # Hard gate — nothing below this touches LLM or citations
+TOP_K_RETRIEVE = 5            # Retrieve 5, filter+select from there
+MAX_CONTEXT_CHUNKS = 3        # Max chunks sent to LLM (prevents context blending)
+
 FALLBACK_ANSWER = "Not found in references."
+
+# ---------------------------------------------------------------------------
+# Singletons
+# ---------------------------------------------------------------------------
+groq_client: Optional[Groq] = None
+embed_model: Optional[SentenceTransformer] = None
+faiss_stores: Dict[int, dict] = {}
 
 
 def get_groq_client() -> Groq:
@@ -55,26 +63,31 @@ def get_embed_model() -> SentenceTransformer:
 
 
 def get_embeddings(texts: List[str]) -> np.ndarray:
-    """Get embeddings using local sentence-transformers model."""
+    """Embed texts locally. Returns L2-normalized float32 array."""
     model = get_embed_model()
-    embeddings = model.encode(texts, convert_to_numpy=True, normalize_embeddings=True)
-    return embeddings.astype("float32")
+    emb = model.encode(texts, convert_to_numpy=True, normalize_embeddings=True)
+    return emb.astype("float32")
 
+
+# ---------------------------------------------------------------------------
+# FAISS Index Management
+# ---------------------------------------------------------------------------
 
 def build_faiss_index(questionnaire_id: int, chunks: List[str], doc_name: str):
-    """Add chunks to the FAISS index for a given questionnaire."""
+    """Add document chunks to the FAISS index for a questionnaire."""
     if not chunks:
         return
 
     embeddings = get_embeddings(chunks)
 
     if questionnaire_id not in faiss_stores:
-        index = faiss.IndexFlatIP(EMBEDDING_DIM)
+        index = faiss.IndexFlatIP(EMBEDDING_DIM)  # Inner product on normalized = cosine
         faiss_stores[questionnaire_id] = {"index": index, "metadata": []}
 
     store = faiss_stores[questionnaire_id]
     base_idx = len(store["metadata"])
     store["index"].add(embeddings)
+
     for i, chunk in enumerate(chunks):
         store["metadata"].append({
             "doc_name": doc_name,
@@ -83,106 +96,65 @@ def build_faiss_index(questionnaire_id: int, chunks: List[str], doc_name: str):
         })
 
     logger.info(
-        "Indexed %d chunks from '%s' for questionnaire %d (total: %d)",
-        len(chunks), doc_name, questionnaire_id, store["index"].ntotal,
+        "INDEXED | doc='%s' | chunks=%d | total_vectors=%d | qid=%d",
+        doc_name, len(chunks), store["index"].ntotal, questionnaire_id,
     )
 
 
-def retrieve_chunks(
-    questionnaire_id: int, query: str, top_k: int = TOP_K_RETRIEVE
-) -> List[Tuple[float, dict]]:
-    """Retrieve top-k most similar chunks for a query."""
+# ---------------------------------------------------------------------------
+# Step 1-3: Retrieve + Sort + Filter
+# ---------------------------------------------------------------------------
+
+def _retrieve_and_filter(
+    questionnaire_id: int, question: str
+) -> Tuple[List[Tuple[float, dict]], List[Tuple[float, dict]]]:
+    """Retrieve top_k chunks, return (all_retrieved, filtered_by_threshold).
+
+    Both lists are sorted by similarity descending.
+    """
     if questionnaire_id not in faiss_stores:
-        return []
+        return [], []
 
     store = faiss_stores[questionnaire_id]
     if store["index"].ntotal == 0:
-        return []
+        return [], []
 
-    query_embedding = get_embeddings([query])
-    k = min(top_k, store["index"].ntotal)
-    scores, indices = store["index"].search(query_embedding, k)
+    query_emb = get_embeddings([question])
+    k = min(TOP_K_RETRIEVE, store["index"].ntotal)
+    scores, indices = store["index"].search(query_emb, k)
 
-    results = []
+    # Build sorted list (already sorted by FAISS, but be explicit)
+    retrieved: List[Tuple[float, dict]] = []
     for score, idx in zip(scores[0], indices[0]):
-        if idx >= 0 and idx < len(store["metadata"]):
-            results.append((float(score), store["metadata"][idx]))
-    return results
+        if 0 <= idx < len(store["metadata"]):
+            retrieved.append((float(score), store["metadata"][idx]))
+    retrieved.sort(key=lambda x: x[0], reverse=True)
+
+    # Filter by threshold
+    filtered = [(s, m) for s, m in retrieved if s >= SIMILARITY_THRESHOLD]
+
+    return retrieved, filtered
 
 
-def filter_chunks_by_threshold(
-    chunks: List[Tuple[float, dict]], threshold: float = SIMILARITY_THRESHOLD
-) -> List[Tuple[float, dict]]:
-    """Keep only chunks with similarity >= threshold, sorted by score desc."""
-    filtered = [(score, meta) for score, meta in chunks if score >= threshold]
-    filtered.sort(key=lambda x: x[0], reverse=True)
-    return filtered
+# ---------------------------------------------------------------------------
+# Step 7-8: LLM Generation (answer text only)
+# ---------------------------------------------------------------------------
+
+SYSTEM_PROMPT = (
+    "You are a precise answering assistant. "
+    "Answer ONLY using the provided context. "
+    "Do NOT add citations, references, document names, or chunk IDs. "
+    "If the context does not contain the answer, respond exactly: "
+    "'Not found in references.'"
+)
 
 
-def build_citation_string(selected_chunks: List[Tuple[float, dict]]) -> str:
-    """Build citation string programmatically from chunk metadata.
-    LLM never touches this — it's system-controlled.
-    """
-    seen = []
-    for _, meta in selected_chunks:
-        citation = f"[{meta['doc_name']} - Chunk {meta['chunk_idx']}]"
-        if citation not in seen:
-            seen.append(citation)
-    return ", ".join(seen)
-
-
-def generate_answer(question: str, questionnaire_id: int) -> Tuple[str, str]:
-    """Generate an answer for a question using the corrected RAG pipeline.
-
-    Returns: (answer_text, citation_string)
-
-    Pipeline:
-      1. Retrieve top_k chunks
-      2. Filter by similarity threshold
-      3. If none pass → return fallback with NO citation
-      4. Select top MAX_CONTEXT_CHUNKS
-      5. LLM generates answer text only (no citations in prompt)
-      6. System attaches citations from selected chunk metadata
-    """
-    # Step 1: Retrieve
-    all_chunks = retrieve_chunks(questionnaire_id, question, top_k=TOP_K_RETRIEVE)
-
-    # Log similarity scores
-    logger.info("Question: %s", question[:80])
-    for i, (score, meta) in enumerate(all_chunks):
-        logger.info(
-            "  Chunk %d: score=%.4f, doc='%s', chunk_idx=%d",
-            i, score, meta["doc_name"], meta["chunk_idx"],
-        )
-
-    # Step 2: Filter by threshold
-    filtered = filter_chunks_by_threshold(all_chunks, SIMILARITY_THRESHOLD)
-
-    # Step 3: Fallback — no chunk passed threshold
-    if not filtered:
-        max_score = all_chunks[0][0] if all_chunks else 0.0
-        logger.info(
-            "  FALLBACK: max_score=%.4f < threshold=%.4f → skipping LLM",
-            max_score, SIMILARITY_THRESHOLD,
-        )
-        return FALLBACK_ANSWER, ""
-
-    # Step 4: Select top chunks for context (limit context overload)
-    selected = filtered[:MAX_CONTEXT_CHUNKS]
-    logger.info(
-        "  Selected %d chunks (scores: %s)",
-        len(selected), [f"{s:.4f}" for s, _ in selected],
-    )
-
-    # Step 5: Build context and call LLM (answer text ONLY — no citations)
-    context = "\n\n---\n\n".join(meta["text"] for _, meta in selected)
-
+def _generate_answer_text(context: str, question: str) -> Tuple[str, float]:
+    """Call LLM to generate answer text only. Returns (answer, elapsed_seconds)."""
     prompt = f"""Answer the following question using ONLY the provided context.
-If the answer is not present in the context, respond exactly with:
-'Not found in references.'
+If the answer is not in the context, respond exactly: 'Not found in references.'
 
-Do NOT include citations, source references, or document names in your answer.
-Provide only the answer text.
+Do NOT include citations, source names, or document references.
 
 Context:
 {context}
@@ -191,38 +163,93 @@ Question: {question}
 
 Answer:"""
 
-    start_time = time.time()
     client = get_groq_client()
+    start = time.time()
     response = client.chat.completions.create(
         model=CHAT_MODEL,
         messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are a precise answering assistant. "
-                    "Answer ONLY from the given context. "
-                    "Do NOT add citations or references. "
-                    "If the answer is not in the context, say exactly: "
-                    "'Not found in references.'"
-                ),
-            },
+            {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ],
         temperature=0.1,
+        top_p=0.9,
         max_tokens=500,
     )
-    elapsed = time.time() - start_time
-    logger.info("  LLM call took %.2fs", elapsed)
+    elapsed = time.time() - start
+    return response.choices[0].message.content.strip(), elapsed
 
-    answer = response.choices[0].message.content.strip()
 
-    # Step 6: If LLM still says not found, respect it — no citations
-    if answer == FALLBACK_ANSWER or "not found in references" in answer.lower():
-        logger.info("  LLM returned fallback → no citations attached")
+# ---------------------------------------------------------------------------
+# Step 9: Deterministic Citation Attachment
+# ---------------------------------------------------------------------------
+
+def _build_citations(selected: List[Tuple[float, dict]]) -> str:
+    """Build citation string from chunk metadata. System-controlled, never LLM."""
+    seen: List[str] = []
+    for _, meta in selected:
+        c = f"[{meta['doc_name']} - Chunk {meta['chunk_idx']}]"
+        if c not in seen:
+            seen.append(c)
+    return ", ".join(seen)
+
+
+# ---------------------------------------------------------------------------
+# Public API: generate_answer
+# ---------------------------------------------------------------------------
+
+def generate_answer(question: str, questionnaire_id: int) -> Tuple[str, str]:
+    """Full deterministic RAG pipeline for one question.
+
+    Returns: (answer_text, citation_string)
+    """
+    q_preview = question[:100]
+
+    # --- Retrieve + Filter ---
+    retrieved, filtered = _retrieve_and_filter(questionnaire_id, question)
+
+    # --- Observability: log all retrieved scores ---
+    logger.info("=" * 70)
+    logger.info("QUESTION: %s", q_preview)
+    if not retrieved:
+        logger.info("  NO VECTORS in index → fallback")
         return FALLBACK_ANSWER, ""
 
-    # Step 7: System attaches citations programmatically
-    citation = build_citation_string(selected)
-    logger.info("  Citations attached: %s", citation)
+    for i, (score, meta) in enumerate(retrieved):
+        marker = "✓" if score >= SIMILARITY_THRESHOLD else "✗"
+        logger.info(
+            "  [%s] rank=%d  score=%.4f  doc='%s'  chunk=%d  preview='%s'",
+            marker, i, score, meta["doc_name"], meta["chunk_idx"],
+            meta["text"][:60].replace("\n", " "),
+        )
 
-    return answer, citation
+    # --- Hard Fallback Gate (Phase 3) ---
+    best_score = retrieved[0][0]
+    if not filtered:
+        logger.info(
+            "  FALLBACK TRIGGERED | best_score=%.4f < threshold=%.4f | NO LLM call",
+            best_score, SIMILARITY_THRESHOLD,
+        )
+        return FALLBACK_ANSWER, ""
+
+    # --- Select top N filtered chunks (Phase 4) ---
+    selected = filtered[:MAX_CONTEXT_CHUNKS]
+    logger.info(
+        "  SELECTED %d chunks | scores=%s",
+        len(selected), [f"{s:.4f}" for s, _ in selected],
+    )
+
+    # --- Build context + Generate (Phase 2, 6) ---
+    context = "\n\n---\n\n".join(meta["text"] for _, meta in selected)
+    answer, elapsed = _generate_answer_text(context, question)
+    logger.info("  LLM responded in %.2fs | answer_len=%d", elapsed, len(answer))
+
+    # --- If LLM says not found → respect it, no citations (Phase 3 secondary) ---
+    if "not found in references" in answer.lower():
+        logger.info("  LLM returned fallback → NO citations attached")
+        return FALLBACK_ANSWER, ""
+
+    # --- Attach citations deterministically (Phase 5) ---
+    citations = _build_citations(selected)
+    logger.info("  CITATIONS: %s", citations)
+
+    return answer, citations
