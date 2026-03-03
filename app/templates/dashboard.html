@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — QA Tool{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="page-header">
+        <h1>Your Questionnaires</h1>
+        <a href="/upload-questionnaire" class="btn btn-primary">+ New Questionnaire</a>
+    </div>
+
+    {% if questionnaires %}
+    <div class="questionnaire-list">
+        {% for q in questionnaires %}
+        <div class="questionnaire-item">
+            <div class="info">
+                <h3>{{ q.filename }}</h3>
+                <p>{{ q.questions | length }} questions · {{ q.created_at.strftime('%b %d, %Y') }}</p>
+            </div>
+            <div class="actions">
+                <a href="/questionnaire/{{ q.id }}/upload-references" class="btn btn-secondary btn-sm">📎 References</a>
+                <a href="/questionnaire/{{ q.id }}/results" class="btn btn-secondary btn-sm">📝 Results</a>
+                <a href="/questionnaire/{{ q.id }}/export" class="btn btn-success btn-sm">⬇ Export</a>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="card" style="text-align: center; padding: 60px;">
+        <div style="font-size: 3rem; margin-bottom: 16px;">📋</div>
+        <h3>No questionnaires yet</h3>
+        <p style="color: var(--text-secondary); margin: 8px 0 24px;">Upload your first questionnaire to get started.</p>
+        <a href="/upload-questionnaire" class="btn btn-primary">Upload Questionnaire</a>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

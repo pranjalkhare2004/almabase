@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}QA Tool — AI-Powered Questionnaire Answers{% endblock %}
+
+{% block content %}
+<div class="container">
+    <section class="hero">
+        <h1>Answer Questionnaires<br><span class="highlight">with AI Precision</span></h1>
+        <p>Upload your questionnaire and reference documents. Get grounded, cited answers instantly using RAG
+            technology.</p>
+        {% if user %}
+        <a href="/dashboard" class="btn btn-primary">Go to Dashboard →</a>
+        {% else %}
+        <a href="/register" class="btn btn-primary">Get Started Free →</a>
+        <a href="/login" class="btn btn-secondary" style="margin-left: 12px;">Login</a>
+        {% endif %}
+    </section>
+
+    <section class="features">
+        <div class="feature-card">
+            <div class="icon">📄</div>
+            <h3>Upload & Parse</h3>
+            <p>Upload PDF or TXT questionnaires. Questions are auto-parsed and ordered.</p>
+        </div>
+        <div class="feature-card">
+            <div class="icon">🔍</div>
+            <h3>RAG Answers</h3>
+            <p>Retrieval-Augmented Generation finds answers grounded in your reference docs.</p>
+        </div>
+        <div class="feature-card">
+            <div class="icon">✏️</div>
+            <h3>Review & Export</h3>
+            <p>Edit any answer before exporting as a clean DOCX document with citations.</p>
+        </div>
+    </section>
+</div>
+{% endblock %}

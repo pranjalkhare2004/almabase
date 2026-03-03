@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Results — QA Tool{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="page-header">
+        <h1>Results: {{ questionnaire.filename }}</h1>
+        <div style="display: flex; gap: 8px;">
+            <a href="/questionnaire/{{ questionnaire.id }}/upload-references" class="btn btn-secondary btn-sm">📎 Add
+                References</a>
+            <a href="/questionnaire/{{ questionnaire.id }}/export" class="btn btn-success btn-sm">⬇ Export DOCX</a>
+        </div>
+    </div>
+
+    {% if not questions %}
+    <div class="card" style="text-align: center; padding: 40px;">
+        <p>No questions found. <a href="/questionnaire/{{ questionnaire.id }}/upload-references">Upload references and
+                generate answers first.</a></p>
+    </div>
+    {% endif %}
+
+    {% for q in questions %}
+    <div class="question-card">
+        <div class="question-number">{{ q.order_index + 1 }}</div>
+        <div class="question-text">{{ q.text }}</div>
+
+        {% if q.answer %}
+        <div class="answer-text">{{ q.answer }}</div>
+        {% endif %}
+
+        {% if q.citation %}
+        <div class="citation">📌 {{ q.citation }}</div>
+        {% endif %}
+
+        <details class="edit-form">
+            <summary
+                style="cursor: pointer; color: var(--accent); font-size: 0.85rem; font-weight: 500; margin-bottom: 8px;">
+                ✏️ Edit Answer</summary>
+            <form method="post" action="/question/{{ q.id }}/edit">
+                <textarea name="answer" class="form-control" rows="4">{{ q.answer or '' }}</textarea>
+                <button type="submit" class="btn btn-primary btn-sm" style="margin-top: 8px;">Save Changes</button>
+            </form>
+        </details>
+    </div>
+    {% endfor %}
+
+    {% if questions %}
+    <div style="text-align: center; margin: 32px 0;">
+        <a href="/questionnaire/{{ questionnaire.id }}/export" class="btn btn-success">⬇ Export All as DOCX</a>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

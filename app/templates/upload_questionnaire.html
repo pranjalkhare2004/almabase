@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Upload Questionnaire — QA Tool{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="page-header">
+        <h1>Upload Questionnaire</h1>
+        <a href="/dashboard" class="btn btn-secondary btn-sm">← Back</a>
+    </div>
+
+    <div class="card">
+        <div class="card-header">
+            <h2>📄 Upload your questionnaire file</h2>
+            <p>Supported formats: PDF, TXT. Questions will be auto-parsed by line or numbering.</p>
+        </div>
+
+        {% if error %}
+        <div class="alert alert-error">{{ error }}</div>
+        {% endif %}
+
+        <form method="post" action="/upload-questionnaire" enctype="multipart/form-data">
+            <div class="upload-area">
+                <div class="icon">📤</div>
+                <input type="file" name="file" class="form-control" accept=".pdf,.txt" required>
+                <p style="margin-top: 12px;">Select a PDF or TXT file containing your questions</p>
+            </div>
+            <button type="submit" class="btn btn-primary btn-block">Upload & Parse Questions</button>
+        </form>
+    </div>
+</div>
+{% endblock %}

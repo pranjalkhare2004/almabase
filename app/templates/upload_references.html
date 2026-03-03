@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Upload References — QA Tool{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="page-header">
+        <h1>Reference Documents</h1>
+        <a href="/dashboard" class="btn btn-secondary btn-sm">← Dashboard</a>
+    </div>
+
+    <div class="card">
+        <div class="card-header">
+            <h2>📎 Upload reference documents for: {{ questionnaire.filename }}</h2>
+            <p>These documents will be used as the knowledge base to answer your questions.</p>
+        </div>
+
+        {% if refs %}
+        <div class="ref-list">
+            <p style="font-weight: 600; margin-bottom: 8px;">Uploaded References:</p>
+            {% for ref in refs %}
+            <div class="ref-item">
+                <span class="icon">✅</span>
+                <span>{{ ref.filename }}</span>
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        <form method="post" action="/questionnaire/{{ questionnaire.id }}/upload-references"
+            enctype="multipart/form-data">
+            <div class="upload-area">
+                <div class="icon">📚</div>
+                <input type="file" name="files" class="form-control" accept=".pdf,.txt" multiple required>
+                <p style="margin-top: 12px;">Select one or more PDF/TXT reference documents</p>
+            </div>
+            <button type="submit" class="btn btn-primary btn-block">Upload References</button>
+        </form>
+
+        {% if refs %}
+        <div style="margin-top: 24px; text-align: center;">
+            <form method="post" action="/questionnaire/{{ questionnaire.id }}/generate" id="generateForm">
+                <button type="submit" class="btn btn-success" onclick="showLoading()">🚀 Generate Answers</button>
+            </form>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    function showLoading() {
+        document.getElementById('loadingOverlay').classList.add('active');
+    }
+</script>
+{% endblock %}
